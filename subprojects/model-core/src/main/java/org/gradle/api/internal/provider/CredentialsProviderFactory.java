@@ -29,21 +29,23 @@ import org.gradle.internal.credentials.DefaultPasswordCredentials;
 import org.gradle.internal.logging.text.TreeFormatter;
 
 import javax.annotation.Nullable;
-import java.util.LinkedHashSet;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 public class CredentialsProviderFactory implements TaskExecutionGraphListener {
 
     private final ProviderFactory providerFactory;
 
-    private final Map<String, Provider<PasswordCredentials>> passwordProviders = new ConcurrentHashMap<>();
-    private final Map<String, Provider<AwsCredentials>> awsProviders = new ConcurrentHashMap<>();
+    private final Map<String, Provider<PasswordCredentials>> passwordProviders = new HashMap<>();
+    private final Map<String, Provider<AwsCredentials>> awsProviders = new HashMap<>();
 
-    private final Set<String> missingProviderErrors = ConcurrentHashMap.newKeySet();
+    private final Set<String> missingProviderErrors = new HashSet<>();
 
     public CredentialsProviderFactory(ProviderFactory providerFactory) {
         this.providerFactory = providerFactory;
@@ -78,7 +80,7 @@ public class CredentialsProviderFactory implements TaskExecutionGraphListener {
     private abstract class CredentialsProvider<T extends Credentials> implements Callable<T> {
         private final String identity;
 
-        private final Set<String> missingProperties = new LinkedHashSet<>();
+        private final List<String> missingProperties = new ArrayList<>();
 
         CredentialsProvider(String identity) {
             this.identity = identity;
@@ -126,7 +128,7 @@ public class CredentialsProviderFactory implements TaskExecutionGraphListener {
         }
 
         @Override
-        public synchronized PasswordCredentials call() {
+        public PasswordCredentials call() {
             String username = getRequiredProperty("Username");
             String password = getRequiredProperty("Password");
             assertRequiredValuesPresent();
@@ -142,7 +144,7 @@ public class CredentialsProviderFactory implements TaskExecutionGraphListener {
         }
 
         @Override
-        public synchronized AwsCredentials call() {
+        public AwsCredentials call() {
             String accessKey = getRequiredProperty("AccessKey");
             String secretKey = getRequiredProperty("SecretKey");
             assertRequiredValuesPresent();
