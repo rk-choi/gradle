@@ -16,145 +16,40 @@
 
 package org.gradle.api.internal.provider;
 
-import org.gradle.api.ProjectConfigurationException;
+import org.gradle.api.Project;
 import org.gradle.api.credentials.AwsCredentials;
 import org.gradle.api.credentials.Credentials;
 import org.gradle.api.credentials.PasswordCredentials;
-import org.gradle.api.execution.TaskExecutionGraph;
-import org.gradle.api.execution.TaskExecutionGraphListener;
+import org.gradle.api.internal.tasks.NodeExecutionContext;
+import org.gradle.api.internal.tasks.WorkNodeAction;
 import org.gradle.api.provider.Provider;
 import org.gradle.api.provider.ProviderFactory;
-import org.gradle.internal.credentials.DefaultAwsCredentials;
+import org.gradle.internal.Cast;
 import org.gradle.internal.credentials.DefaultPasswordCredentials;
 import org.gradle.internal.logging.text.TreeFormatter;
+import org.jetbrains.annotations.NotNull;
 
 import javax.annotation.Nullable;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.Callable;
-import java.util.stream.Collectors;
 
-public class CredentialsProviderFactory implements TaskExecutionGraphListener {
-
+public class CredentialsProviderFactory {
     private final ProviderFactory providerFactory;
-
-    private final Map<String, Provider<PasswordCredentials>> passwordProviders = new HashMap<>();
-    private final Map<String, Provider<AwsCredentials>> awsProviders = new HashMap<>();
-
-    private final Set<String> missingProviderErrors = new HashSet<>();
 
     public CredentialsProviderFactory(ProviderFactory providerFactory) {
         this.providerFactory = providerFactory;
     }
 
-    @SuppressWarnings("unchecked")
     public <T extends Credentials> Provider<T> provide(Class<T> credentialsType, String identity) {
-        validateIdentity(identity);
-
-        if (PasswordCredentials.class.isAssignableFrom(credentialsType)) {
-            return (Provider<T>) passwordProviders.computeIfAbsent(identity, id -> evaluateAtConfigurationTime(new PasswordCredentialsProvider(id)));
-        }
-        if (AwsCredentials.class.isAssignableFrom(credentialsType)) {
-            return (Provider<T>) awsProviders.computeIfAbsent(identity, id -> evaluateAtConfigurationTime(new AwsCredentialsProvider(id)));
-        }
-
-        throw new IllegalArgumentException(String.format("Unsupported credentials type: %s", credentialsType));
+        return provide(credentialsType, providerFactory.provider(() -> identity));
     }
 
     public <T extends Credentials> Provider<T> provide(Class<T> credentialsType, Provider<String> identity) {
-        return evaluateAtConfigurationTime(() -> provide(credentialsType, identity.get()).get());
-    }
+        if (PasswordCredentials.class.isAssignableFrom(credentialsType)) {
+            return new PasswordCredentialsProvider<>(credentialsType, identity);
 
-    @Override
-    public void graphPopulated(TaskExecutionGraph graph) {
-        if (!missingProviderErrors.isEmpty()) {
-            throw new ProjectConfigurationException("Credentials required for this build could not be resolved.",
-                missingProviderErrors.stream().map(MissingValueException::new).collect(Collectors.toList()));
+        } else if (AwsCredentials.class.isAssignableFrom(credentialsType)) {
+            return null;
         }
-    }
-
-    private abstract class CredentialsProvider<T extends Credentials> implements Callable<T> {
-        private final String identity;
-
-        private final List<String> missingProperties = new ArrayList<>();
-
-        CredentialsProvider(String identity) {
-            this.identity = identity;
-        }
-
-        @Nullable
-        String getRequiredProperty(String property) {
-            String identityProperty = identityProperty(property);
-            Provider<String> propertyProvider = providerFactory.gradleProperty(identityProperty).forUseAtConfigurationTime();
-            if (!propertyProvider.isPresent()) {
-                missingProperties.add(identityProperty);
-            }
-            return propertyProvider.getOrNull();
-        }
-
-        @Nullable
-        String getOptionalProperty(String property) {
-            String identityProperty = identityProperty(property);
-            return providerFactory.gradleProperty(identityProperty).forUseAtConfigurationTime().getOrNull();
-        }
-
-        void assertRequiredValuesPresent() {
-            if (!missingProperties.isEmpty()) {
-                TreeFormatter errorBuilder = new TreeFormatter();
-                errorBuilder.node("The following Gradle properties are missing for '").append(identity).append("' credentials");
-                errorBuilder.startChildren();
-                for (String missingProperty : missingProperties) {
-                    errorBuilder.node(missingProperty);
-                }
-                errorBuilder.endChildren();
-                missingProperties.clear();
-                throw new MissingValueException(errorBuilder.toString());
-            }
-        }
-
-        private String identityProperty(String property) {
-            return identity + property;
-        }
-    }
-
-    private class PasswordCredentialsProvider extends CredentialsProvider<PasswordCredentials> {
-
-        PasswordCredentialsProvider(String identity) {
-            super(identity);
-        }
-
-        @Override
-        public PasswordCredentials call() {
-            String username = getRequiredProperty("Username");
-            String password = getRequiredProperty("Password");
-            assertRequiredValuesPresent();
-
-            return new DefaultPasswordCredentials(username, password);
-        }
-    }
-
-    private class AwsCredentialsProvider extends CredentialsProvider<AwsCredentials> {
-
-        AwsCredentialsProvider(String identity) {
-            super(identity);
-        }
-
-        @Override
-        public AwsCredentials call() {
-            String accessKey = getRequiredProperty("AccessKey");
-            String secretKey = getRequiredProperty("SecretKey");
-            assertRequiredValuesPresent();
-
-            AwsCredentials credentials = new DefaultAwsCredentials();
-            credentials.setAccessKey(accessKey);
-            credentials.setSecretKey(secretKey);
-            credentials.setSessionToken(getOptionalProperty("SessionToken"));
-            return credentials;
-        }
+        throw new IllegalArgumentException(String.format("Unsupported credentials type: %s", credentialsType));
     }
 
     private static void validateIdentity(@Nullable String identity) {
@@ -163,33 +58,114 @@ public class CredentialsProviderFactory implements TaskExecutionGraphListener {
         }
     }
 
-    private <T extends Credentials> Provider<T> evaluateAtConfigurationTime(Callable<T> provider) {
-        return new InterceptingProvider<>(provider);
-    }
+    private class PasswordCredentialsProvider<T extends Credentials> extends AbstractMinimalProvider<T> {
+        private final Class<T> credentialsType;
+        private final Provider<String> identity;
+        private final Provider<String> usernamePropertyName;
+        private final Provider<String> passwordPropertyName;
+        private final ProviderInternal<String> usernameProperty;
+        private final ProviderInternal<String> passwordProperty;
 
-    private class InterceptingProvider<T> extends DefaultProvider<T> {
+        private PasswordCredentialsProvider(Class<T> credentialsType, Provider<String> identity) {
+            this.credentialsType = credentialsType;
+            this.identity = identity;
+            this.usernamePropertyName = identity.map(name -> name + "Username");
+            this.passwordPropertyName = identity.map(name -> name + "Password");
+            this.usernameProperty = Providers.internal(providerFactory.gradleProperty(usernamePropertyName));
+            this.passwordProperty = Providers.internal(providerFactory.gradleProperty(passwordPropertyName));
+        }
 
-        public InterceptingProvider(Callable<? extends T> value) {
-            super(value);
+        @Override
+        public ExecutionTimeValue<? extends T> calculateExecutionTimeValue() {
+            return isChangingValue(usernameProperty) || isChangingValue(passwordProperty)
+                    ? ExecutionTimeValue.changingValue(this)
+                    : super.calculateExecutionTimeValue();
+        }
+
+        private boolean isChangingValue(ProviderInternal<?> provider) {
+            return provider.calculateExecutionTimeValue().isChangingValue();
+        }
+
+        @Override
+        protected Value<? extends T> calculateOwnValue(ValueConsumer consumer) {
+            String name = identity.get();
+            validateIdentity(name);
+
+            Value<? extends String> usernameValue = usernameProperty.calculateValue(consumer);
+            Value<? extends String> passwordValue = passwordProperty.calculateValue(consumer);
+
+            if (usernameValue.isMissing() || passwordValue.isMissing()) {
+                TreeFormatter errorBuilder = new TreeFormatter();
+                errorBuilder.node("The following Gradle properties are missing for '").append(name).append("' credentials");
+                errorBuilder.startChildren();
+                if (usernameValue.isMissing()) {
+                    errorBuilder.node(usernamePropertyName.get());
+                }
+                if (passwordValue.isMissing()) {
+                    errorBuilder.node(passwordPropertyName.get());
+                }
+                errorBuilder.endChildren();
+                throw new MissingValueException(errorBuilder.toString());
+            }
+
+            return Value.of(Cast.uncheckedCast(new DefaultPasswordCredentials(usernameValue.get(), passwordValue.get())));
+        }
+
+        @Nullable
+        @Override
+        public Class<T> getType() {
+            return credentialsType;
         }
 
         @Override
         public ValueProducer getProducer() {
-            calculatePresence(ValueConsumer.IgnoreUnsafeRead);
-            return super.getProducer();
+            return new PlusProducer(usernameProperty.getProducer(), passwordProperty.getProducer()).plus(getResolvingAction());
+        }
+
+        @NotNull
+        private ValueProducer getResolvingAction() {
+            return ValueProducer.nodeAction(new ResolveCredentialsWorkNodeAction(this));
+        }
+    }
+
+    public static class ResolveCredentialsWorkNodeAction implements WorkNodeAction {
+        private final Provider<? extends Credentials> provider;
+
+        public ResolveCredentialsWorkNodeAction(Provider<? extends Credentials> provider) {
+            this.provider = provider;
+        }
+
+        @Nullable
+        @Override
+        public Project getProject() {
+            return null;
         }
 
         @Override
-        public boolean calculatePresence(ValueConsumer consumer) {
-            try {
-                return super.calculatePresence(consumer);
-            } catch (MissingValueException e) {
-                missingProviderErrors.add(e.getMessage());
-                if (consumer == ValueConsumer.IgnoreUnsafeRead) {
-                    return false;
-                }
-                throw e;
-            }
+        public void run(NodeExecutionContext context) {
+            // Resolve the provider
+            provider.get();
         }
     }
+//
+//    private class AwsCredentialsProvider extends CredentialsProvider<AwsCredentials> {
+//
+//        AwsCredentialsProvider(String identity) {
+//            super(identity);
+//        }
+//
+//        @Override
+//        public AwsCredentials call() {
+//            String accessKey = getRequiredProperty("AccessKey");
+//            String secretKey = getRequiredProperty("SecretKey");
+//            assertRequiredValuesPresent();
+//
+//            AwsCredentials credentials = new DefaultAwsCredentials();
+//            credentials.setAccessKey(accessKey);
+//            credentials.setSecretKey(secretKey);
+//            credentials.setSessionToken(getOptionalProperty("SessionToken"));
+//            return credentials;
+//        }
+//    }
+
 }

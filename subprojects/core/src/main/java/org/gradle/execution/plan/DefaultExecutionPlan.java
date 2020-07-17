@@ -893,6 +893,11 @@ public class DefaultExecutionPlan implements ExecutionPlan {
         return nodeMapping.getNumberOfPublicNodes();
     }
 
+    @Override
+    public void ensureCredentialsAreAvailable() {
+        
+    }
+
     private static class GraphEdge {
         private final Node from;
         private final Node to;

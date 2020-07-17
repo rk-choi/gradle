@@ -45,15 +45,12 @@ public class DefaultProviderFactory implements ProviderFactory {
     private final ValueSourceProviderFactory valueSourceProviderFactory;
 
     public DefaultProviderFactory() {
-        this(null, null);
+        this(null);
     }
 
-    public DefaultProviderFactory(@Nullable ValueSourceProviderFactory valueSourceProviderFactory, @Nullable ListenerManager listenerManager) {
+    public DefaultProviderFactory(@Nullable ValueSourceProviderFactory valueSourceProviderFactory) {
         this.valueSourceProviderFactory = valueSourceProviderFactory;
         this.credentialsProviderFactory = new CredentialsProviderFactory(this);
-        if (listenerManager != null) {
-            listenerManager.addListener(credentialsProviderFactory);
-        }
     }
 
     @Override
