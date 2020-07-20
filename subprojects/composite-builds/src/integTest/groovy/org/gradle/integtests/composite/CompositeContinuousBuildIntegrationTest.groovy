@@ -173,6 +173,7 @@ class CompositeContinuousBuildIntegrationTest extends AbstractContinuousIntegrat
         succeeds("tasks", "--debug")
         then:
         outputContains("Hello World")
+        assert false
 
         when:
         pluginSource.text = pluginSource.text.replace("Hello", "Goodbye")
