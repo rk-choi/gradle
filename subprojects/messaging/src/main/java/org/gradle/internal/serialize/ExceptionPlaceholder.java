@@ -18,6 +18,7 @@ package org.gradle.internal.serialize;
 
 import org.gradle.api.JavaVersion;
 import org.gradle.api.Transformer;
+import org.gradle.api.specs.Spec;
 import org.gradle.internal.Cast;
 import org.gradle.internal.UncheckedException;
 import org.gradle.internal.exceptions.Contextual;
@@ -64,7 +65,7 @@ class ExceptionPlaceholder implements Serializable {
     private Throwable toStringRuntimeExec;
     private Throwable getMessageExec;
 
-    public ExceptionPlaceholder(Throwable original, Transformer<ExceptionReplacingObjectOutputStream, OutputStream> objectOutputStreamCreator) {
+    public ExceptionPlaceholder(final Throwable original, Transformer<ExceptionReplacingObjectOutputStream, OutputStream> objectOutputStreamCreator) {
         Throwable throwable = original;
         type = throwable.getClass().getName();
         contextual = throwable.getClass().getAnnotation(Contextual.class) != null;
@@ -114,7 +115,7 @@ class ExceptionPlaceholder implements Serializable {
                 }
                 int suppressedIndex = suppressed.indexOf(obj);
                 if (suppressedIndex >= 0) {
-                    return new NestedExceptionPlaceholder(NestedExceptionPlaceholder.Kind.suppressed, causeIndex);
+                    return new NestedExceptionPlaceholder(NestedExceptionPlaceholder.Kind.suppressed, suppressedIndex);
                 }
                 return obj;
             }
@@ -129,9 +130,19 @@ class ExceptionPlaceholder implements Serializable {
 //                LOGGER.debug("Ignoring failure to serialize throwable.", ignored);
         }
 
-        this.causes = convertToExceptionPlaceholderList(original, causes, objectOutputStreamCreator, false);
-        this.suppressed = convertToExceptionPlaceholderList(original, suppressed, objectOutputStreamCreator, true);
-
+        this.causes = convertToExceptionPlaceholderList(causes, objectOutputStreamCreator, new Spec<Throwable>() {
+            @Override
+            public boolean isSatisfiedBy(Throwable element) {
+                // TODO: Causes usually don't have cycles and we fail in other ways if there are cycles in the causes.
+                return false;
+            }
+        });
+        this.suppressed = convertToExceptionPlaceholderList(suppressed, objectOutputStreamCreator, new Spec<Throwable>() {
+            @Override
+            public boolean isSatisfiedBy(Throwable element) {
+                return hasSuppressedCycle(original, element);
+            }
+        });
     }
 
     @SuppressWarnings("Since15")
@@ -142,21 +153,19 @@ class ExceptionPlaceholder implements Serializable {
         return Collections.emptyList();
     }
 
-    private static List<ExceptionPlaceholder> convertToExceptionPlaceholderList(Throwable original, List<? extends Throwable> throwables, Transformer<ExceptionReplacingObjectOutputStream, OutputStream> objectOutputStreamCreator, boolean checkCycle) {
+    private static List<ExceptionPlaceholder> convertToExceptionPlaceholderList(List<? extends Throwable> throwables, Transformer<ExceptionReplacingObjectOutputStream, OutputStream> objectOutputStreamCreator, Spec<Throwable> checkCycle) {
         if (throwables.isEmpty()) {
             return Collections.emptyList();
         } else if (throwables.size() == 1) {
             Throwable cause = throwables.get(0);
-            if (checkCycle) {
-                if (hasCycle(original, cause)) {
-                    return Collections.emptyList();
-                }
+            if (checkCycle.isSatisfiedBy(cause)) {
+                return Collections.emptyList();
             }
             return Collections.singletonList(new ExceptionPlaceholder(cause, objectOutputStreamCreator));
         } else {
             List<ExceptionPlaceholder> placeholders = new ArrayList<ExceptionPlaceholder>(throwables.size());
             for (Throwable cause : throwables) {
-                if (!checkCycle || !hasCycle(original, cause)) {
+                if (!checkCycle.isSatisfiedBy(cause)) {
                     placeholders.add(new ExceptionPlaceholder(cause, objectOutputStreamCreator));
                 }
             }
@@ -164,20 +173,20 @@ class ExceptionPlaceholder implements Serializable {
         }
     }
 
-    private static boolean hasCycle(Throwable original, Throwable source) {
+    private static boolean hasSuppressedCycle(Throwable root, Throwable source) {
         Throwable current;
         Throwable cause = source;
 
         try {
             do {
                 current = cause;
-                if (original == current) {
+                if (root == current) {
                     return true;
                 }
                 List<? extends Throwable> suppressed = extractSuppressed(current);
                 if (!suppressed.isEmpty()) {
                     for (Throwable throwable : suppressed) {
-                        if (hasCycle(original, throwable)) {
+                        if (hasSuppressedCycle(root, throwable)) {
                             return true;
                         }
                     }

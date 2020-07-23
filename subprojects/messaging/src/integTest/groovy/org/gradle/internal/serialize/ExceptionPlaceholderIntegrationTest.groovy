@@ -253,4 +253,53 @@ class ExceptionPlaceholderIntegrationTest extends AbstractIntegrationSpec {
         failure.assertHasErrorOutput('Suppressed:')
         failure.assertHasErrorOutput('CIRCULAR REFERENCE:')
     }
+
+    @Issue("https://github.com/gradle/gradle/issues/9487")
+    def 'suppressed exceptions are deserialized properly'() {
+        given:
+        buildFile << """
+            apply plugin: 'java-library'
+
+            ${jcenterRepository()}
+
+            dependencies {
+                testImplementation 'junit:junit:4.13'
+            }
+        """
+
+        file("src/test/java/example/CustomException.java") << '''
+            package example;
+            
+            public class CustomException extends RuntimeException {
+                CustomException(String msg) {
+                    super(msg);
+                }
+            }
+        '''
+        file('src/test/java/example/MyTest.java') << '''
+            package example;
+
+            import org.junit.Test;
+
+            public class MyTest {
+
+                @Test
+                public void suppressedExceptionFail() {
+                    RuntimeException failure = new RuntimeException("Boom!");
+                    failure.addSuppressed(new CustomException("suppressed"));
+                    throw failure;
+                }
+            }
+        '''
+
+        when:
+        fails "test"
+
+        then:
+        def result = new HtmlTestExecutionResult(testDirectory)
+        result.assertTestClassesExecuted("example.MyTest")
+        result.testClass("example.MyTest")
+                .assertTestFailed("suppressedExceptionFail",
+                        containsString("Boom!"))
+    }
 }
